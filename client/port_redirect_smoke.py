@@ -4,11 +4,11 @@ import sys
 import threading
 import time
 
-from main import (
-    FilterDriverClient,
-    PORT_REDIRECT_PROCESS_MODE_EXCLUDE,
-    PORT_REDIRECT_PROTOCOL_TCP,
-    PortRedirectRule,
+from redirect_driver import (
+    DriverError,
+    REDIRECT_PROTO_TCP,
+    RedirectDriverClient,
+    RedirectRule,
 )
 
 
@@ -64,7 +64,6 @@ def _connect_and_send(host, port, family):
 
 def _run_case(client, name, family, target_host, target_port, redirect_host, redirect_port, args):
     print(f"[{name}] add rule {target_host}:{target_port} -> {redirect_host}:{redirect_port}")
-    before = client.query_stats()
     server = None
 
     if args.start_server:
@@ -72,20 +71,22 @@ def _run_case(client, name, family, target_host, target_port, redirect_host, red
         server = OneShotTcpServer(bind_host, redirect_port, family)
         server.start()
 
-    rule = PortRedirectRule(
-        name=f"smoke-{name}",
-        target_host=target_host,
-        target_port=target_port,
-        redirect_host=redirect_host,
-        redirect_port=redirect_port,
-        protocol_mask=PORT_REDIRECT_PROTOCOL_TCP,
-        enabled=True,
-        process_mode=PORT_REDIRECT_PROCESS_MODE_EXCLUDE,
+    rule = RedirectRule(
+        orig_ip=target_host,
+        orig_port=target_port,
+        new_ip=redirect_host,
+        new_port=redirect_port,
+        protocol=REDIRECT_PROTO_TCP,
+        new_dst_mac=args.mac,
+        local_loopback=args.local,
     )
 
     created = client.add_rule(rule)
     try:
         print(f"[{name}] created rule id={created.rule_id}")
+        listed_ids = {r.rule_id for r in client.list_rules()}
+        if created.rule_id not in listed_ids:
+            raise RuntimeError(f"{name} created rule id={created.rule_id} not returned by list_rules()")
         if args.connect:
             time.sleep(0.2)
             _connect_and_send(target_host, target_port, family)
@@ -93,14 +94,9 @@ def _run_case(client, name, family, target_host, target_port, redirect_host, red
             received = server.join()
             if received != PAYLOAD:
                 raise RuntimeError(f"{name} server received {received!r}, expected {PAYLOAD!r}")
-        after = client.query_stats()
     finally:
         client.delete_rule(created.rule_id)
         print(f"[{name}] deleted rule id={created.rule_id}")
-
-    examined_delta = after.examined_nbls - before.examined_nbls
-    redirected_delta = after.redirected_nbls - before.redirected_nbls
-    print(f"[{name}] stats examined_delta={examined_delta} redirected_delta={redirected_delta}")
 
 
 def build_parser():
@@ -116,12 +112,14 @@ def build_parser():
     parser.add_argument("--connect", action="store_true", help="connect to each target host:port after adding the rule")
     parser.add_argument("--start-server", action="store_true", help="start a one-shot TCP server on each redirect port")
     parser.add_argument("--bind-host", help="server bind address; defaults to each redirect host")
-    parser.add_argument("--ipv4-target-host", default="127.0.0.1")
-    parser.add_argument("--ipv4-redirect-host", default="127.0.0.1")
+    parser.add_argument("--mac", default="", help="optional next-hop destination MAC")
+    parser.add_argument("--local", action="store_true", help="force local loopback redirect flag")
+    parser.add_argument("--ipv4-target-host", default="10.0.0.10")
+    parser.add_argument("--ipv4-redirect-host", default="10.0.0.20")
     parser.add_argument("--ipv4-target-port", type=int, default=18081)
     parser.add_argument("--ipv4-redirect-port", type=int, default=18080)
-    parser.add_argument("--ipv6-target-host", default="::1")
-    parser.add_argument("--ipv6-redirect-host", default="::1")
+    parser.add_argument("--ipv6-target-host", default="2001:db8::1")
+    parser.add_argument("--ipv6-redirect-host", default="2001:db8::2")
     parser.add_argument("--ipv6-target-port", type=int, default=18083)
     parser.add_argument("--ipv6-redirect-port", type=int, default=18082)
     return parser
@@ -136,7 +134,7 @@ def main():
         print("--start-server requires --connect", file=sys.stderr)
         return 2
 
-    client = FilterDriverClient()
+    client = RedirectDriverClient()
     if not client.available:
         print("This smoke test requires Windows and the NDISLWF device.", file=sys.stderr)
         return 2
@@ -164,7 +162,7 @@ def main():
                 args.ipv6_redirect_port,
                 args,
             )
-    except OSError as error:
+    except (DriverError, OSError) as error:
         print(f"driver or socket call failed: {error}", file=sys.stderr)
         return 1
     except Exception as error:
