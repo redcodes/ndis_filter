@@ -207,7 +207,7 @@ class TestGuiIntegration(unittest.TestCase):
             self.assertEqual(page.rule_table.item(0, 1).text(), "测试规则A")
 
             with mock.patch("PyQt5.QtWidgets.QMessageBox.warning") as warn_mock:
-                win = app_main.MainWindow()
+                win = app_main.MainWindow(auto_check_driver=False)
             self.assertIsNotNone(warn_mock)
             tab_titles = [win.tab_widget.tabText(i) for i in range(win.tab_widget.count())]
             net_idx = tab_titles.index("网络管控")

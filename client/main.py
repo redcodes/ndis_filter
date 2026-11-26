@@ -1,12 +1,14 @@
+import os
 import sys
 
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QLinearGradient, QPainter
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QCheckBox,
     QDialog,
+    QFileDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -26,6 +28,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from driver_manager import DriverManagerError, DriverState, NdisLwfDriverManager
 from file_filter_page import FileFilterPage
 from net_monitor_page import NetworkMonitorPage
 from proc_explorer_page import ProcessExplorerPage
@@ -378,10 +381,12 @@ class PortRedirectPage(QWidget):
 
     ruleCountChanged = pyqtSignal(int)
 
-    def __init__(self, parent=None, driver=None, name_store=None):
+    def __init__(self, parent=None, driver=None, name_store=None, driver_manager=None):
         super().__init__(parent)
         self.driver = driver or RedirectDriverClient()
         self.name_store = name_store or RuleNameStore()
+        self.driver_manager = driver_manager or NdisLwfDriverManager()
+        self.driver_status = None
         self.rules = []
 
         layout = QVBoxLayout(self)
@@ -403,10 +408,21 @@ class PortRedirectPage(QWidget):
         top_row.addWidget(refresh_button)
 
         status_row = QHBoxLayout()
-        status_row.setSpacing(12)
+        status_row.setSpacing(8)
         self.driver_status_label = QLabel("", self)
         self.driver_status_label.setStyleSheet("color: #1a1a1a; font-size: 13px;")
+
+        self.install_driver_button = QPushButton("安装驱动", self)
+        self.start_driver_button = QPushButton("启动驱动", self)
+        self.uninstall_driver_button = QPushButton("卸载驱动", self)
+        self.install_driver_button.clicked.connect(lambda: self.install_driver(prompt_package=True))
+        self.start_driver_button.clicked.connect(self.start_driver)
+        self.uninstall_driver_button.clicked.connect(self.uninstall_driver)
+
         status_row.addWidget(self.driver_status_label, 1)
+        status_row.addWidget(self.install_driver_button)
+        status_row.addWidget(self.start_driver_button)
+        status_row.addWidget(self.uninstall_driver_button)
 
         self.rule_table = QTableWidget(0, 9, self)
         self.rule_table.setHorizontalHeaderLabels(
@@ -456,22 +472,175 @@ class PortRedirectPage(QWidget):
         layout.addWidget(self.rule_table, 1)
         layout.addLayout(bottom_row)
 
+        self.refresh_driver_status()
         self.load_rules(silent=True)
 
-    def _set_driver_status(self, connected: bool, message: str):
-        color = "#1b6e2d" if connected else "#b00020"
+    def _set_driver_status(self, color: str, message: str):
         self.driver_status_label.setStyleSheet(f"color: {color}; font-size: 13px;")
         self.driver_status_label.setText(f"驱动状态：{message}")
+
+    def refresh_driver_status(self):
+        status = self.driver_manager.query_status()
+        self.driver_status = status
+
+        if status.state == DriverState.RUNNING and status.device_ready:
+            self._set_driver_status("#1b6e2d", status.summary)
+        elif status.state in (DriverState.RUNNING, DriverState.STOPPED, DriverState.PENDING):
+            self._set_driver_status("#b26a00", status.summary)
+        else:
+            self._set_driver_status("#b00020", status.summary)
+
+        self.install_driver_button.setEnabled(not status.installed)
+        self.start_driver_button.setEnabled(status.installed and not status.running)
+        self.uninstall_driver_button.setEnabled(status.installed)
+        return status
+
+    def ensure_driver_ready_on_startup(self):
+        """客户端启动时的驱动状态检查：未安装则提示安装，已安装未启动则自动启动。"""
+        status = self.refresh_driver_status()
+        if status.state == DriverState.NOT_INSTALLED:
+            choice = QMessageBox.question(
+                self,
+                "驱动未安装",
+                "未检测到 NDISLWF 过滤驱动（服务 NdisLwf 未安装）。\n是否立即安装驱动？",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+            if choice == QMessageBox.Yes:
+                self.install_driver(prompt_package=False)
+        elif status.state == DriverState.STOPPED:
+            try:
+                QApplication.setOverrideCursor(Qt.WaitCursor)
+                try:
+                    self.driver_manager.start()
+                finally:
+                    QApplication.restoreOverrideCursor()
+            except (DriverManagerError, OSError) as err:
+                self.refresh_driver_status()
+                QMessageBox.warning(
+                    self,
+                    "自动启动驱动失败",
+                    f"检测到 NDISLWF 驱动已安装但未启动，尝试自动启动失败：\n{err}",
+                )
+                return
+            self.refresh_driver_status()
+            self.load_rules(silent=True)
+
+    def _pick_driver_package(self, prompt_package: bool):
+        inf_path, sys_path = self.driver_manager.find_default_package()
+        if prompt_package and inf_path and sys_path:
+            box = QMessageBox(self)
+            box.setWindowTitle("安装 NDISLWF 驱动")
+            box.setIcon(QMessageBox.Question)
+            box.setText(
+                "检测到以下驱动安装文件：\n"
+                f"INF: {inf_path}\n"
+                f"SYS: {sys_path}\n\n"
+                "是否直接使用以上文件安装驱动？"
+            )
+            use_default_btn = box.addButton("直接安装", QMessageBox.AcceptRole)
+            choose_manual_btn = box.addButton("手动选择文件...", QMessageBox.ActionRole)
+            box.addButton("取消", QMessageBox.RejectRole)
+            box.exec_()
+            clicked = box.clickedButton()
+            if clicked == use_default_btn:
+                return inf_path, sys_path
+            if clicked != choose_manual_btn:
+                return None, None
+            inf_path, sys_path = None, None
+
+        if not inf_path:
+            inf_path, _ = QFileDialog.getOpenFileName(
+                self, "选择驱动安装文件 (netlwf.inf)", self.driver_manager.project_root, "INF 文件 (*.inf)"
+            )
+            if not inf_path:
+                return None, None
+
+        if not sys_path:
+            sibling_sys = os.path.join(os.path.dirname(inf_path), "ndislwf.sys")
+            if os.path.isfile(sibling_sys):
+                sys_path = sibling_sys
+            else:
+                sys_path, _ = QFileDialog.getOpenFileName(
+                    self, "选择驱动二进制文件 (ndislwf.sys)", self.driver_manager.project_root, "驱动文件 (*.sys)"
+                )
+                if not sys_path:
+                    return None, None
+        return inf_path, sys_path
+
+    def install_driver(self, prompt_package: bool = True):
+        inf_path, sys_path = self._pick_driver_package(prompt_package=prompt_package)
+        if not inf_path or not sys_path:
+            return
+        try:
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            try:
+                status = self.driver_manager.install(inf_path=inf_path, sys_path=sys_path, start_after_install=True)
+            finally:
+                QApplication.restoreOverrideCursor()
+        except (DriverManagerError, OSError) as err:
+            self.refresh_driver_status()
+            QMessageBox.warning(self, "安装驱动失败", f"安装 NDISLWF 驱动失败：\n{err}")
+            return
+
+        self.refresh_driver_status()
+        self.load_rules(silent=True)
+        extra = "\n系统提示需要重启计算机以完成网络驱动绑定生效。" if status.reboot_required else ""
+        QMessageBox.information(self, "安装驱动完成", f"NDISLWF 驱动安装完成，当前状态：{status.summary}{extra}")
+
+    def start_driver(self):
+        try:
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            try:
+                status = self.driver_manager.start()
+            finally:
+                QApplication.restoreOverrideCursor()
+        except (DriverManagerError, OSError) as err:
+            self.refresh_driver_status()
+            QMessageBox.warning(self, "启动驱动失败", f"启动 NDISLWF 驱动失败：\n{err}")
+            return
+        self.refresh_driver_status()
+        self.load_rules(silent=True)
+        QMessageBox.information(self, "启动驱动完成", f"NDISLWF 驱动当前状态：{status.summary}")
+
+    def uninstall_driver(self):
+        confirm = QMessageBox.question(
+            self,
+            "卸载驱动",
+            "确定要停止并卸载 NDISLWF 过滤驱动吗？\n卸载过程中网络连接可能会短暂中断。",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+        try:
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            try:
+                status = self.driver_manager.uninstall()
+            finally:
+                QApplication.restoreOverrideCursor()
+        except (DriverManagerError, OSError) as err:
+            self.refresh_driver_status()
+            QMessageBox.warning(self, "卸载驱动失败", f"卸载 NDISLWF 驱动失败：\n{err}")
+            return
+
+        self.rules = []
+        self.refresh_driver_status()
+        self.refresh_table()
+        extra = "\n系统提示需要重启计算机以完成驱动清理。" if status.reboot_required else ""
+        QMessageBox.information(self, "卸载驱动完成", f"NDISLWF 驱动已卸载，当前状态：{status.summary}{extra}")
 
     def show_driver_error(self, action: str, error: Exception):
         QMessageBox.warning(self, "驱动调用失败", f"{action}失败：{error}")
 
     def load_rules(self, silent: bool = False):
+        status = self.refresh_driver_status()
         try:
             rules = self.driver.list_rules()
         except (DriverError, OSError) as err:
             self.rules = []
-            self._set_driver_status(False, str(err))
+            if status.state == DriverState.RUNNING:
+                self._set_driver_status("#b00020", str(err))
             self.refresh_table()
             if not silent:
                 self.show_driver_error("查询规则", err)
@@ -481,7 +650,7 @@ class PortRedirectPage(QWidget):
         self.name_store.prune([r.rule_id for r in rules])
         self.name_store.apply_names(rules)
         self.rules = rules
-        self._set_driver_status(True, f"已连接 ({self.driver.device_path})  |  支持 IPv4/IPv6、TCP/UDP、MAC 改写及本机环回")
+        self._set_driver_status("#1b6e2d", f"已安装并运行中 ({self.driver.device_path})  |  支持 IPv4/IPv6、TCP/UDP、MAC 改写及本机环回")
         self.refresh_table()
 
     def refresh_table(self):
@@ -587,14 +756,19 @@ class PortRedirectPage(QWidget):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, auto_check_driver: bool = True, driver_manager=None):
         super().__init__()
         self.setWindowTitle("CnCrypt Protect - 主机防护工具")
         self.resize(1120, 760)
         self.setStyleSheet(APP_STYLE)
+        self._driver_manager = driver_manager
+        self.port_redirect_page = None
 
         self._setup_menu_bar()
         self._setup_ui()
+
+        if auto_check_driver and self.port_redirect_page is not None:
+            QTimer.singleShot(0, self.port_redirect_page.ensure_driver_ready_on_startup)
 
     def _setup_menu_bar(self):
         bar = QMenuBar(self)
@@ -648,7 +822,8 @@ class MainWindow(QMainWindow):
                 self.tab_widget.addTab(NetworkMonitorPage(self.tab_widget), title)
             elif title == "端口重定向":
                 port_redirect_index = index
-                page = PortRedirectPage(self.tab_widget)
+                page = PortRedirectPage(self.tab_widget, driver_manager=self._driver_manager)
+                self.port_redirect_page = page
                 self.tab_widget.addTab(page, f"端口重定向({len(page.rules)})")
                 page.ruleCountChanged.connect(
                     lambda count, tab_idx=index: self.tab_widget.setTabText(tab_idx, f"端口重定向({count})")

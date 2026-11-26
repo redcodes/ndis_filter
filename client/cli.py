@@ -1,6 +1,7 @@
 import argparse
 import sys
 
+from driver_manager import DriverManagerError, NdisLwfDriverManager
 from redirect_driver import (
     DriverError,
     RedirectDriverClient,
@@ -95,8 +96,50 @@ def cmd_clear(args):
     return 0
 
 
+def cmd_driver_status(args):
+    mgr = NdisLwfDriverManager()
+    st = mgr.query_status()
+    print(
+        f"state={st.state.value} "
+        f"installed={st.installed} "
+        f"running={st.running} "
+        f"device_ready={st.device_ready} "
+        f"is_admin={st.is_admin} "
+        f"summary={st.summary}"
+    )
+    return 0
+
+
+def cmd_driver_install(args):
+    mgr = NdisLwfDriverManager()
+    st = mgr.install(inf_path=args.inf, sys_path=args.sys, start_after_install=not args.no_start)
+    print(f"installed state={st.state.value} running={st.running} reboot_required={st.reboot_required}")
+    return 0
+
+
+def cmd_driver_uninstall(args):
+    mgr = NdisLwfDriverManager()
+    st = mgr.uninstall()
+    print(f"uninstalled state={st.state.value} reboot_required={st.reboot_required}")
+    return 0
+
+
+def cmd_driver_start(args):
+    mgr = NdisLwfDriverManager()
+    st = mgr.start()
+    print(f"started state={st.state.value} running={st.running} device_ready={st.device_ready}")
+    return 0
+
+
+def cmd_driver_stop(args):
+    mgr = NdisLwfDriverManager()
+    st = mgr.stop()
+    print(f"stopped state={st.state.value} running={st.running}")
+    return 0
+
+
 def build_parser():
-    parser = argparse.ArgumentParser(description="NDISLWF port redirect command line tool")
+    parser = argparse.ArgumentParser(description="NDISLWF port redirect & driver management CLI")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     list_parser = subparsers.add_parser("list", help="list rules")
@@ -133,6 +176,24 @@ def build_parser():
     clear_parser = subparsers.add_parser("clear", help="clear all redirect rules")
     clear_parser.set_defaults(func=cmd_clear)
 
+    status_parser = subparsers.add_parser("driver-status", help="query NDISLWF driver install/run status")
+    status_parser.set_defaults(func=cmd_driver_status)
+
+    install_parser = subparsers.add_parser("driver-install", help="install NDISLWF driver")
+    install_parser.add_argument("--inf", default=None, help="path to netlwf.inf")
+    install_parser.add_argument("--sys", default=None, help="path to ndislwf.sys")
+    install_parser.add_argument("--no-start", action="store_true", help="do not start service after install")
+    install_parser.set_defaults(func=cmd_driver_install)
+
+    uninstall_parser = subparsers.add_parser("driver-uninstall", help="stop and uninstall NDISLWF driver")
+    uninstall_parser.set_defaults(func=cmd_driver_uninstall)
+
+    start_parser = subparsers.add_parser("driver-start", help="start installed NDISLWF driver")
+    start_parser.set_defaults(func=cmd_driver_start)
+
+    stop_parser = subparsers.add_parser("driver-stop", help="stop running NDISLWF driver")
+    stop_parser.set_defaults(func=cmd_driver_stop)
+
     return parser
 
 
@@ -141,7 +202,7 @@ def main():
     args = parser.parse_args()
     try:
         return args.func(args)
-    except (DriverError, OSError) as error:
+    except (DriverError, DriverManagerError, OSError) as error:
         print(f"driver call failed: {error}", file=sys.stderr)
         return 1
     except ValueError as error:
