@@ -1,0 +1,14 @@
+TARGETNAME=redirectctl
+TARGETTYPE=PROGRAM
+UMTYPE=console
+UMENTRY=main
+USE_MSVCRT=1
+
+MSC_WARNING_LEVEL=/WX /W4
+
+INCLUDES=..;.;
+
+TARGETLIBS=$(SDK_LIB_PATH)\ws2_32.lib
+
+SOURCES=\
+    redirectctl.c
