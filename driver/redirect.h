@@ -98,4 +98,12 @@ RedirectFreeClonedNbl(
     IN PNET_BUFFER_LIST     ClonedNbl
     );
 
+BOOLEAN
+RedirectInjectLocalPacket(
+    IN PMS_FILTER           pFilter,
+    IN const UCHAR         *PacketData,
+    IN ULONG                PacketLen,
+    IN BOOLEAN              DispatchLevel
+    );
+
 #endif // _REDIRECT_H_

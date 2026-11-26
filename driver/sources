@@ -24,6 +24,7 @@ SOURCES=\
     filter.c\
     device.c\
     redirect.c\
+    dns_spoof.c\
     flt_dbg.c\
     filter.rc
     

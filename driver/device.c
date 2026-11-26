@@ -288,6 +288,63 @@ FilterDeviceIoControl(
             }
             break;
 
+        case IOCTL_FILTER_ADD_DNS_SPOOF_RULE:
+            InputBuffer = OutputBuffer = (PUCHAR)Irp->AssociatedIrp.SystemBuffer;
+            InputBufferLength = IrpSp->Parameters.DeviceIoControl.InputBufferLength;
+            OutputBufferLength = IrpSp->Parameters.DeviceIoControl.OutputBufferLength;
+
+            if (InputBuffer == NULL || InputBufferLength < sizeof(DNS_SPOOF_RULE))
+            {
+                Status = STATUS_INVALID_PARAMETER;
+                break;
+            }
+
+            {
+                DNS_SPOOF_RULE DnsRule;
+                NdisMoveMemory(&DnsRule, InputBuffer, sizeof(DNS_SPOOF_RULE));
+                Status = DnsSpoofAddRule(&DnsRule);
+                if (NT_SUCCESS(Status) && OutputBufferLength >= sizeof(DNS_SPOOF_RULE))
+                {
+                    NdisMoveMemory(OutputBuffer, &DnsRule, sizeof(DNS_SPOOF_RULE));
+                    InfoLength = sizeof(DNS_SPOOF_RULE);
+                }
+            }
+            break;
+
+        case IOCTL_FILTER_DEL_DNS_SPOOF_RULE:
+            InputBuffer = (PUCHAR)Irp->AssociatedIrp.SystemBuffer;
+            InputBufferLength = IrpSp->Parameters.DeviceIoControl.InputBufferLength;
+
+            if (InputBuffer == NULL || InputBufferLength < sizeof(DNS_SPOOF_DEL_RULE))
+            {
+                Status = STATUS_INVALID_PARAMETER;
+                break;
+            }
+
+            Status = DnsSpoofDeleteRule(((PDNS_SPOOF_DEL_RULE)InputBuffer)->RuleId);
+            break;
+
+        case IOCTL_FILTER_CLEAR_DNS_SPOOF_RULES:
+            DnsSpoofClearRules();
+            Status = STATUS_SUCCESS;
+            break;
+
+        case IOCTL_FILTER_LIST_DNS_SPOOF_RULES:
+            OutputBuffer = (PUCHAR)Irp->AssociatedIrp.SystemBuffer;
+            OutputBufferLength = IrpSp->Parameters.DeviceIoControl.OutputBufferLength;
+            {
+                ULONG BytesRequired = 0;
+                Status = DnsSpoofListRules(
+                             (PDNS_SPOOF_RULE)OutputBuffer,
+                             OutputBufferLength,
+                             &BytesRequired);
+                if (NT_SUCCESS(Status))
+                {
+                    InfoLength = BytesRequired;
+                }
+            }
+            break;
+
         default:
             Status = STATUS_INVALID_DEVICE_REQUEST;
             break;

@@ -1,6 +1,12 @@
 import argparse
 import sys
 
+from dns_spoof_driver import (
+    DNS_SPOOF_DEFAULT_TTL,
+    DnsSpoofDriverClient,
+    DnsSpoofRule,
+    flush_dns_cache,
+)
 from driver_manager import DriverManagerError, NdisLwfDriverManager
 from redirect_driver import (
     DriverError,
@@ -138,6 +144,61 @@ def cmd_driver_stop(args):
     return 0
 
 
+def cmd_dns_list(args):
+    client = DnsSpoofDriverClient()
+    rules = client.list_rules()
+    if not rules:
+        print("no dns spoof rules")
+        return 0
+    for rule in rules:
+        print(
+            f"id={rule.rule_id} "
+            f"domain={rule.domain} "
+            f"ipv4={rule.ipv4_text} "
+            f"ipv6={rule.ipv6_text} "
+            f"ttl={rule.ttl}"
+        )
+    return 0
+
+
+def cmd_dns_add(args):
+    client = DnsSpoofDriverClient()
+    rule = DnsSpoofRule(
+        rule_id=args.id,
+        domain=args.domain,
+        fake_ipv4=args.ipv4 or "",
+        fake_ipv6=args.ipv6 or "",
+        ttl=args.ttl,
+        wildcard=args.wildcard,
+    )
+    created = client.add_rule(rule, flush_cache=not args.no_flush)
+    print(
+        f"added dns rule id={created.rule_id} domain={created.domain} "
+        f"ipv4={created.ipv4_text} ipv6={created.ipv6_text} ttl={created.ttl}"
+    )
+    return 0
+
+
+def cmd_dns_delete(args):
+    client = DnsSpoofDriverClient()
+    client.delete_rule(args.rule_id, flush_cache=not args.no_flush)
+    print(f"deleted dns rule id={args.rule_id}")
+    return 0
+
+
+def cmd_dns_clear(args):
+    client = DnsSpoofDriverClient()
+    client.clear_rules(flush_cache=not args.no_flush)
+    print("cleared all dns spoof rules")
+    return 0
+
+
+def cmd_dns_flush(args):
+    ok = flush_dns_cache()
+    print(f"dns cache flushed={ok}")
+    return 0 if ok else 1
+
+
 def build_parser():
     parser = argparse.ArgumentParser(description="NDISLWF port redirect & driver management CLI")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -193,6 +254,31 @@ def build_parser():
 
     stop_parser = subparsers.add_parser("driver-stop", help="stop running NDISLWF driver")
     stop_parser.set_defaults(func=cmd_driver_stop)
+
+    dns_list_parser = subparsers.add_parser("dns-list", help="list DNS spoof rules")
+    dns_list_parser.set_defaults(func=cmd_dns_list)
+
+    dns_add_parser = subparsers.add_parser("dns-add", help="add or update a DNS spoof rule")
+    dns_add_parser.add_argument("--domain", required=True, help="exact or *.wildcard domain")
+    dns_add_parser.add_argument("--ipv4", default="", help="forged IPv4 address (A record)")
+    dns_add_parser.add_argument("--ipv6", default="", help="forged IPv6 address (AAAA record)")
+    dns_add_parser.add_argument("--ttl", type=int, default=DNS_SPOOF_DEFAULT_TTL, help="answer TTL seconds")
+    dns_add_parser.add_argument("--wildcard", action="store_true", help="match all subdomains (*.domain)")
+    dns_add_parser.add_argument("--id", type=int, default=0, help="explicit rule id (0=auto)")
+    dns_add_parser.add_argument("--no-flush", action="store_true", help="skip DnsFlushResolverCache")
+    dns_add_parser.set_defaults(func=cmd_dns_add)
+
+    dns_del_parser = subparsers.add_parser("dns-delete", help="delete a DNS spoof rule")
+    dns_del_parser.add_argument("rule_id", type=int)
+    dns_del_parser.add_argument("--no-flush", action="store_true", help="skip DnsFlushResolverCache")
+    dns_del_parser.set_defaults(func=cmd_dns_delete)
+
+    dns_clear_parser = subparsers.add_parser("dns-clear", help="clear all DNS spoof rules")
+    dns_clear_parser.add_argument("--no-flush", action="store_true", help="skip DnsFlushResolverCache")
+    dns_clear_parser.set_defaults(func=cmd_dns_clear)
+
+    dns_flush_parser = subparsers.add_parser("dns-flush", help="flush Windows DNS resolver cache")
+    dns_flush_parser.set_defaults(func=cmd_dns_flush)
 
     return parser
 

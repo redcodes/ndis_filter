@@ -140,6 +140,7 @@ Return Value:
         InitializeListHead(&FilterModuleList);
 
         RedirectGlobalInit();
+        DnsSpoofGlobalInit();
         
         Status = NdisFRegisterFilterDriver(DriverObject,
                                            (NDIS_HANDLE)FilterDriverObject,
@@ -147,6 +148,7 @@ Return Value:
                                            &FilterDriverHandle);
         if (Status != NDIS_STATUS_SUCCESS)
         {
+            DnsSpoofGlobalCleanup();
             RedirectGlobalCleanup();
             FILTER_FREE_LOCK(&FilterListLock);
             DEBUGP(DL_WARN, ("MSFilter: Register filter driver failed.\n")); 
@@ -161,6 +163,7 @@ Return Value:
 
         if (Status != NDIS_STATUS_SUCCESS)
         {
+            DnsSpoofGlobalCleanup();
             RedirectGlobalCleanup();
             NdisFDeregisterFilterDriver(FilterDriverHandle);
             FILTER_FREE_LOCK(&FilterListLock);
@@ -671,6 +674,7 @@ Return Value:
     // 
     FilterDeregisterDevice();
     NdisFDeregisterFilterDriver(FilterDriverHandle);
+    DnsSpoofGlobalCleanup();
     RedirectGlobalCleanup();
     
 #if DBG    
@@ -1237,11 +1241,18 @@ NOTE: Redirects matching outbound IPv4/IPv6 packets and passes through others.
             NextNbl = NET_BUFFER_LIST_NEXT_NBL(CurrNbl);
             NET_BUFFER_LIST_NEXT_NBL(CurrNbl) = NULL;
 
-            Action = RedirectProcessSendNbl(
-                         pFilter,
-                         CurrNbl,
-                         DispatchLevel,
-                         &OutNbl);
+            if (DnsSpoofProcessSendNbl(pFilter, CurrNbl, DispatchLevel))
+            {
+                Action = RedirectSendLocalInjected;
+            }
+            else
+            {
+                Action = RedirectProcessSendNbl(
+                             pFilter,
+                             CurrNbl,
+                             DispatchLevel,
+                             &OutNbl);
+            }
 
             if (Action == RedirectSendPassthrough || Action == RedirectSendCloned)
             {

@@ -4,5 +4,6 @@
 #include "flt_dbg.h" 
 #include "filter.h"
 #include "redirect.h"
+#include "dns_spoof.h"
 
 

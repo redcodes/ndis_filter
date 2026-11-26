@@ -2585,3 +2585,43 @@ RedirectProcessReceiveNbl(
     *ClonedNbl = NewNbl;
     return NDIS_STATUS_SUCCESS;
 }
+
+BOOLEAN
+RedirectInjectLocalPacket(
+    IN PMS_FILTER       pFilter,
+    IN const UCHAR     *PacketData,
+    IN ULONG            PacketLen,
+    IN BOOLEAN          DispatchLevel
+    )
+{
+    PUCHAR              Buf;
+    PNET_BUFFER_LIST    Nbl;
+
+    if (pFilter == NULL || PacketData == NULL || PacketLen == 0)
+    {
+        return FALSE;
+    }
+
+    Buf = (PUCHAR)NdisAllocateMemoryWithTagPriority(
+                      pFilter->FilterHandle,
+                      PacketLen,
+                      FILTER_ALLOC_TAG,
+                      NormalPoolPriority);
+    if (Buf == NULL)
+    {
+        return FALSE;
+    }
+
+    NdisMoveMemory(Buf, PacketData, PacketLen);
+
+    Nbl = RedirectWrapBufferAsReceiveNbl(pFilter, Buf, PacketLen);
+    if (Nbl == NULL)
+    {
+        NdisFreeMemory(Buf, 0, 0);
+        return FALSE;
+    }
+
+    NET_BUFFER_LIST_INFO(Nbl, TcpIpChecksumNetBufferListInfo) = NULL;
+    RedirectEnqueueInjectNbls(pFilter, Nbl, Nbl, 1, DispatchLevel);
+    return TRUE;
+}

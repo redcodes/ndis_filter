@@ -26,6 +26,10 @@
 #define IOCTL_FILTER_DEL_REDIRECT_RULE      _NDIS_CONTROL_CODE(15, METHOD_BUFFERED)
 #define IOCTL_FILTER_CLEAR_REDIRECT_RULES   _NDIS_CONTROL_CODE(16, METHOD_BUFFERED)
 #define IOCTL_FILTER_LIST_REDIRECT_RULES    _NDIS_CONTROL_CODE(17, METHOD_BUFFERED)
+#define IOCTL_FILTER_ADD_DNS_SPOOF_RULE     _NDIS_CONTROL_CODE(18, METHOD_BUFFERED)
+#define IOCTL_FILTER_DEL_DNS_SPOOF_RULE     _NDIS_CONTROL_CODE(19, METHOD_BUFFERED)
+#define IOCTL_FILTER_CLEAR_DNS_SPOOF_RULES  _NDIS_CONTROL_CODE(20, METHOD_BUFFERED)
+#define IOCTL_FILTER_LIST_DNS_SPOOF_RULES   _NDIS_CONTROL_CODE(21, METHOD_BUFFERED)
 
 
 #ifndef FILTER_USER_REDIRECT_ONLY
@@ -129,6 +133,33 @@ typedef struct _REDIRECT_DEL_RULE
 {
     ULONG               RuleId;
 } REDIRECT_DEL_RULE, *PREDIRECT_DEL_RULE;
+
+//
+// DNS spoofing definitions (shared between kernel and user mode)
+//
+#define DNS_SPOOF_FLAG_HAS_IPV4         0x0001
+#define DNS_SPOOF_FLAG_HAS_IPV6         0x0002
+#define DNS_SPOOF_FLAG_WILDCARD         0x0004
+
+#define DNS_SPOOF_MAX_DOMAIN_LEN        256
+#define MAX_DNS_SPOOF_RULES             64
+#define DNS_SPOOF_DEFAULT_TTL           30
+
+typedef struct _DNS_SPOOF_RULE
+{
+    ULONG               RuleId;         // 0 = auto-assign, non-zero = add or update by ID
+    USHORT              Flags;          // DNS_SPOOF_FLAG_*
+    USHORT              Reserved;
+    ULONG               Ttl;            // Answer TTL in seconds (0 = default 30s)
+    UCHAR               FakeIpv4[4];    // Forged IPv4 address (network byte order)
+    UCHAR               FakeIpv6[16];   // Forged IPv6 address (network byte order)
+    CHAR                Domain[DNS_SPOOF_MAX_DOMAIN_LEN]; // Lowercase ASCII domain (e.g. "baidu.com" or "*.baidu.com")
+} DNS_SPOOF_RULE, *PDNS_SPOOF_RULE;
+
+typedef struct _DNS_SPOOF_DEL_RULE
+{
+    ULONG               RuleId;
+} DNS_SPOOF_DEL_RULE, *PDNS_SPOOF_DEL_RULE;
 
 #endif //__FILTERUSER_H__
 

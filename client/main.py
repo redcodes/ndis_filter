@@ -28,6 +28,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from dns_spoof_page import DnsSpoofPage
 from driver_manager import DriverManagerError, DriverState, NdisLwfDriverManager
 from file_filter_page import FileFilterPage
 from net_monitor_page import NetworkMonitorPage
@@ -810,6 +811,7 @@ class MainWindow(QMainWindow):
             "进程拦截",
             "文件重定向",
             "端口重定向",
+            "域名欺骗",
             "进程行为",
             "进程浏览器",
         ]
@@ -827,6 +829,13 @@ class MainWindow(QMainWindow):
                 self.tab_widget.addTab(page, f"端口重定向({len(page.rules)})")
                 page.ruleCountChanged.connect(
                     lambda count, tab_idx=index: self.tab_widget.setTabText(tab_idx, f"端口重定向({count})")
+                )
+            elif title == "域名欺骗":
+                dns_page = DnsSpoofPage(self.tab_widget)
+                self.dns_spoof_page = dns_page
+                self.tab_widget.addTab(dns_page, f"域名欺骗({len(dns_page.rules)})")
+                dns_page.ruleCountChanged.connect(
+                    lambda count, tab_idx=index: self.tab_widget.setTabText(tab_idx, f"域名欺骗({count})")
                 )
             elif title == "进程浏览器":
                 self.tab_widget.addTab(ProcessExplorerPage(self.tab_widget), title)
