@@ -17,44 +17,51 @@ IP 地址和端口重定向功能，并提供配套命令行配置工具 redirec
 
 二、目录与文件说明
 ------------------------------------------------------------------------
-  filter.c / filter.h      NDIS LWF 驱动主流程与收发包回调
-  redirect.c / redirect.h  IPv4/IPv6 重定向引擎（规则表/NAT会话/校验和/LSO/本地注入）
-  device.c                 控制设备 \\.\NDISLWF 与 IOCTL 分发
-  filteruser.h             驱动与用户态共用的 IOCTL 及规则结构定义
-  netlwf.inf               NDIS 过滤驱动安装 INF 文件
-  sources / makefile       旧版 WDK 驱动构建配置
-  tool\redirectctl.c       用户态命令行配置工具源码
-  tool\sources / makefile  用户态工具 WDK 构建配置
+  driver\                         NDIS 6.0 LWF 内核驱动源码目录
+    driver\filter.c / filter.h    NDIS LWF 驱动主流程与收发包回调
+    driver\redirect.c / redirect.h
+                                  IPv4/IPv6 重定向引擎（规则表/NAT会话/校验和/LSO/本地注入）
+    driver\device.c               控制设备 \\.\NDISLWF 与 IOCTL 分发
+    driver\filteruser.h           驱动与用户态共用的 IOCTL 及规则结构定义
+    driver\flt_dbg.c / flt_dbg.h  调试日志辅助模块
+    driver\precomp.h / filter.rc  预编译头与资源定义
+    driver\netlwf.inf             NDIS 过滤驱动安装 INF 文件
+    driver\sources / makefile     旧版 WDK 驱动构建配置
+  tool\                           用户态命令行配置工具目录
+    tool\redirectctl.c            用户态命令行配置工具源码
+    tool\sources / makefile       用户态工具 WDK 构建配置（引用 ..\driver\filteruser.h）
+  client\                         PyQt 图形客户端及 Python 工具脚本（详见 client\README.md）
+  readme.txt                      项目总使用说明
 
 
 三、编译方法（旧版 WDK 7600）
 ------------------------------------------------------------------------
-假设 WDK 安装路径为 C:\WinDDK\7600.16385.1，源码位于 d:\06-个人\filter：
+假设 WDK 安装路径为 C:\WinDDK\7600.16385.1，源码位于 d:\01-个人\03-项目\ndis_filter：
 
 1. 编译驱动 ndislwf.sys
-   [Win7 x64 发布版] -> objfre_win7_amd64\amd64\ndislwf.sys
-     cmd /c "call C:\WinDDK\7600.16385.1\bin\setenv.bat C:\WinDDK\7600.16385.1\ fre x64 WIN7 && cd /d d:\06-个人\filter && build -cZ"
+   [Win7 x64 发布版] -> driver\objfre_win7_amd64\amd64\ndislwf.sys
+     cmd /c "call C:\WinDDK\7600.16385.1\bin\setenv.bat C:\WinDDK\7600.16385.1\ fre x64 WIN7 && cd /d d:\01-个人\03-项目\ndis_filter\driver && build -cZ"
 
-   [Win7 x64 调试版] -> objchk_win7_amd64\amd64\ndislwf.sys
-     cmd /c "call C:\WinDDK\7600.16385.1\bin\setenv.bat C:\WinDDK\7600.16385.1\ chk x64 WIN7 && cd /d d:\06-个人\filter && build -cZ"
+   [Win7 x64 调试版] -> driver\objchk_win7_amd64\amd64\ndislwf.sys
+     cmd /c "call C:\WinDDK\7600.16385.1\bin\setenv.bat C:\WinDDK\7600.16385.1\ chk x64 WIN7 && cd /d d:\01-个人\03-项目\ndis_filter\driver && build -cZ"
 
-   [Win7 x86 发布版] -> objfre_win7_x86\i386\ndislwf.sys
-     cmd /c "call C:\WinDDK\7600.16385.1\bin\setenv.bat C:\WinDDK\7600.16385.1\ fre x86 WIN7 && cd /d d:\06-个人\filter && build -cZ"
+   [Win7 x86 发布版] -> driver\objfre_win7_x86\i386\ndislwf.sys
+     cmd /c "call C:\WinDDK\7600.16385.1\bin\setenv.bat C:\WinDDK\7600.16385.1\ fre x86 WIN7 && cd /d d:\01-个人\03-项目\ndis_filter\driver && build -cZ"
 
 2. 编译配置工具 redirectctl.exe
    [Win7 x64 发布版] -> tool\objfre_win7_amd64\amd64\redirectctl.exe
-     cmd /c "call C:\WinDDK\7600.16385.1\bin\setenv.bat C:\WinDDK\7600.16385.1\ fre x64 WIN7 && cd /d d:\06-个人\filter\tool && build -cZ"
+     cmd /c "call C:\WinDDK\7600.16385.1\bin\setenv.bat C:\WinDDK\7600.16385.1\ fre x64 WIN7 && cd /d d:\01-个人\03-项目\ndis_filter\tool && build -cZ"
 
    [Win7 x86 发布版] -> tool\objfre_win7_x86\i386\redirectctl.exe
-     cmd /c "call C:\WinDDK\7600.16385.1\bin\setenv.bat C:\WinDDK\7600.16385.1\ fre x86 WIN7 && cd /d d:\06-个人\filter\tool && build -cZ"
+     cmd /c "call C:\WinDDK\7600.16385.1\bin\setenv.bat C:\WinDDK\7600.16385.1\ fre x86 WIN7 && cd /d d:\01-个人\03-项目\ndis_filter\tool && build -cZ"
 
-   注：如在 WDK Build Environment 命令行窗口中，直接进入对应目录执行
-   build -cZ 即可。
+   注：如在 WDK Build Environment 命令行窗口中，直接进入 driver 或 tool 目录
+   执行 build -cZ 即可。
 
 
 四、驱动安装与更新步骤
 ------------------------------------------------------------------------
-1. 将编译得到的 ndislwf.sys 与 netlwf.inf 放到目标机器同一目录。
+1. 将编译得到的 ndislwf.sys（位于 driver\objfre_*\...）与 driver\netlwf.inf 放到目标机器同一目录。
    （64 位 Windows 需开启测试签名模式并对 sys 进行测试签名，或开机按 F8
    选择“禁用驱动程序签名强制”。）
 2. 打开“控制面板 -> 网络和 Internet -> 网络连接”，右键目标网卡 ->“属性”。
