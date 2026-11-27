@@ -132,22 +132,84 @@ class TestDnsSpoofGui(unittest.TestCase):
         self.assertEqual(built.fake_ipv6, "2001:db8::1")
         self.assertEqual(built.ttl, 45)
 
+        # Unchecking wildcard on an existing *.domain rule should strip "*." cleanly
+        edit_dlg = dp.DnsSpoofRuleDialog(rule=built)
+        self.assertTrue(edit_dlg.wildcard_checkbox.isChecked())
+        edit_dlg.wildcard_checkbox.setChecked(False)
+        edited = edit_dlg.get_rule()
+        self.assertEqual(edited.domain, "baidu.com")
+        self.assertFalse(edited.wildcard)
+
         class InMemoryDnsDriver:
             device_path = ds.DEVICE_PATH
 
-            def list_rules(self):
-                return [ds.DnsSpoofRule(rule_id=1, domain="*.baidu.com", fake_ipv4="1.1.1.1", ttl=30, wildcard=True)]
+            def __init__(self):
+                self._rules = [
+                    ds.DnsSpoofRule(rule_id=1, domain="*.baidu.com", fake_ipv4="1.1.1.1", ttl=30, wildcard=True)
+                ]
+                self._next_id = 2
 
-        page = dp.DnsSpoofPage(driver=InMemoryDnsDriver())
+            def list_rules(self):
+                return list(self._rules)
+
+            def add_rule(self, rule, flush_cache=True):
+                new_rule = ds.DnsSpoofRule(
+                    rule_id=self._next_id,
+                    domain=rule.domain,
+                    fake_ipv4=rule.fake_ipv4,
+                    fake_ipv6=rule.fake_ipv6,
+                    ttl=rule.ttl,
+                    wildcard=rule.wildcard,
+                )
+                self._next_id += 1
+                self._rules.append(new_rule)
+                return new_rule
+
+            def update_rule(self, rule, flush_cache=True):
+                for idx, existing in enumerate(self._rules):
+                    if existing.rule_id == rule.rule_id:
+                        self._rules[idx] = rule
+                        return rule
+                self._rules.append(rule)
+                return rule
+
+            def delete_rule(self, rule_id, flush_cache=True):
+                self._rules = [r for r in self._rules if r.rule_id != rule_id]
+
+            def clear_rules(self, flush_cache=True):
+                self._rules.clear()
+
+        mem_driver = InMemoryDnsDriver()
+        page = dp.DnsSpoofPage(driver=mem_driver)
         self.assertEqual(page.rule_table.rowCount(), 1)
         self.assertEqual(page.rule_table.item(0, 1).text(), "*.baidu.com")
         self.assertEqual(page.rule_table.item(0, 3).text(), "1.1.1.1")
+
+        # Verify remove_selected_rule & clear_rules propagate to driver
+        page.rule_table.selectRow(0)
+        page.remove_selected_rule()
+        self.assertEqual(page.rule_table.rowCount(), 0)
+        self.assertEqual(len(mem_driver._rules), 0)
+
+        mem_driver.add_rule(ds.DnsSpoofRule(domain="example.com", fake_ipv4="2.2.2.2", ttl=60))
+        page.load_rules(silent=True)
+        self.assertEqual(page.rule_table.rowCount(), 1)
+        with mock.patch("PyQt5.QtWidgets.QMessageBox.question", return_value=dp.QMessageBox.Yes):
+            page.clear_rules()
+        self.assertEqual(page.rule_table.rowCount(), 0)
 
         with mock.patch("PyQt5.QtWidgets.QMessageBox.warning"):
             win = app_main.MainWindow(auto_check_driver=False)
         titles = [win.tab_widget.tabText(i) for i in range(win.tab_widget.count())]
         dns_idx = next(i for i, t in enumerate(titles) if t.startswith("域名欺骗"))
         self.assertIsInstance(win.tab_widget.widget(dns_idx), dp.DnsSpoofPage)
+        self.assertIs(win.dns_spoof_page.driver_manager, win.port_redirect_page.driver_manager)
+
+        with mock.patch.object(win.dns_spoof_page, "load_rules") as reload_mock:
+            win.port_redirect_page.driverStateChanged.emit()
+            self.assertEqual(reload_mock.call_count, 1)
+            win.tab_widget.setCurrentIndex(dns_idx)
+            self.assertEqual(reload_mock.call_count, 2)
 
 
 if __name__ == "__main__":

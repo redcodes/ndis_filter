@@ -30,6 +30,7 @@ from dns_spoof_driver import (
     pack_dns_spoof_rule,
     unpack_dns_spoof_rule,
 )
+from driver_manager import DriverState
 from redirect_driver import DriverError
 
 
@@ -61,6 +62,8 @@ class DnsSpoofRuleDialog(QDialog):
         layout.addWidget(self.domain_edit)
 
         self.wildcard_checkbox = QCheckBox("按通配符匹配所有子域名（自动规范为 *.域名）", panel)
+        self.wildcard_checkbox.toggled.connect(self._on_wildcard_toggled)
+        self.domain_edit.textChanged.connect(self._on_domain_changed)
         layout.addWidget(self.wildcard_checkbox)
 
         ip_grid = QGridLayout()
@@ -106,6 +109,17 @@ class DnsSpoofRuleDialog(QDialog):
 
         self._load_rule(self.rule)
 
+    def _on_wildcard_toggled(self, checked: bool):
+        text = self.domain_edit.text().strip()
+        if not checked and text.startswith("*."):
+            self.domain_edit.setText(text[2:])
+
+    def _on_domain_changed(self, text: str):
+        if text.strip().startswith("*.") and not self.wildcard_checkbox.isChecked():
+            self.wildcard_checkbox.blockSignals(True)
+            self.wildcard_checkbox.setChecked(True)
+            self.wildcard_checkbox.blockSignals(False)
+
     def _load_rule(self, rule: DnsSpoofRule):
         self.domain_edit.setText(rule.domain)
         self.wildcard_checkbox.setChecked(rule.wildcard or rule.domain.startswith("*."))
@@ -149,9 +163,10 @@ class DnsSpoofPage(QWidget):
 
     ruleCountChanged = pyqtSignal(int)
 
-    def __init__(self, parent=None, driver=None):
+    def __init__(self, parent=None, driver=None, driver_manager=None):
         super().__init__(parent)
         self.driver = driver or DnsSpoofDriverClient()
+        self.driver_manager = driver_manager
         self.rules = []
 
         layout = QVBoxLayout(self)
@@ -230,11 +245,15 @@ class DnsSpoofPage(QWidget):
         self.status_label.setText(f"域名欺骗状态：{text}")
 
     def load_rules(self, silent: bool = False):
+        driver_status = self.driver_manager.query_status() if self.driver_manager is not None else None
         try:
             rules = self.driver.list_rules()
         except (DriverError, OSError) as err:
             self.rules = []
-            self._set_status(False, str(err))
+            if driver_status is not None and driver_status.state != DriverState.RUNNING:
+                self._set_status(False, f"驱动{driver_status.summary}（请在“端口重定向”页安装或启动 NDISLWF 驱动）")
+            else:
+                self._set_status(False, str(err))
             self.refresh_table()
             if not silent:
                 QMessageBox.warning(self, "驱动调用失败", f"查询域名欺骗规则失败：{err}")

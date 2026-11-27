@@ -86,6 +86,7 @@ REDIRECT_DEL_RULE_STRUCT = struct.Struct("<L")
 assert REDIRECT_RULE_STRUCT.size == 52
 assert REDIRECT_DEL_RULE_STRUCT.size == 4
 
+ERROR_INVALID_FUNCTION = 1
 ERROR_FILE_NOT_FOUND = 2
 ERROR_ACCESS_DENIED = 5
 ERROR_NOT_ENOUGH_MEMORY = 8
@@ -95,6 +96,7 @@ ERROR_NOT_FOUND = 1168
 ERROR_NO_SYSTEM_RESOURCES = 1450
 
 _WINERROR_HINTS = {
+    ERROR_INVALID_FUNCTION: "当前加载的 NDISLWF 驱动不支持该功能控制码，请重新编译并更新最新版 ndislwf.sys",
     ERROR_FILE_NOT_FOUND: "未找到驱动设备 \\\\.\\NDISLWF，请确认驱动已安装并启动",
     ERROR_ACCESS_DENIED: "访问驱动设备被拒绝，请以管理员权限运行程序",
     ERROR_INVALID_PARAMETER: "驱动拒绝了规则参数，请检查 IP、端口、协议或规则 ID",

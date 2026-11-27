@@ -381,6 +381,7 @@ class PortRedirectPage(QWidget):
     r"""端口重定向页签：对接 NDISLWF 驱动（\\.\NDISLWF）并维护本地规则名称映射。"""
 
     ruleCountChanged = pyqtSignal(int)
+    driverStateChanged = pyqtSignal()
 
     def __init__(self, parent=None, driver=None, name_store=None, driver_manager=None):
         super().__init__(parent)
@@ -526,6 +527,7 @@ class PortRedirectPage(QWidget):
                 return
             self.refresh_driver_status()
             self.load_rules(silent=True)
+            self.driverStateChanged.emit()
 
     def _pick_driver_package(self, prompt_package: bool):
         inf_path, sys_path = self.driver_manager.find_default_package()
@@ -586,6 +588,7 @@ class PortRedirectPage(QWidget):
 
         self.refresh_driver_status()
         self.load_rules(silent=True)
+        self.driverStateChanged.emit()
         extra = "\n系统提示需要重启计算机以完成网络驱动绑定生效。" if status.reboot_required else ""
         QMessageBox.information(self, "安装驱动完成", f"NDISLWF 驱动安装完成，当前状态：{status.summary}{extra}")
 
@@ -602,6 +605,7 @@ class PortRedirectPage(QWidget):
             return
         self.refresh_driver_status()
         self.load_rules(silent=True)
+        self.driverStateChanged.emit()
         QMessageBox.information(self, "启动驱动完成", f"NDISLWF 驱动当前状态：{status.summary}")
 
     def uninstall_driver(self):
@@ -628,6 +632,7 @@ class PortRedirectPage(QWidget):
         self.rules = []
         self.refresh_driver_status()
         self.refresh_table()
+        self.driverStateChanged.emit()
         extra = "\n系统提示需要重启计算机以完成驱动清理。" if status.reboot_required else ""
         QMessageBox.information(self, "卸载驱动完成", f"NDISLWF 驱动已卸载，当前状态：{status.summary}{extra}")
 
@@ -831,7 +836,8 @@ class MainWindow(QMainWindow):
                     lambda count, tab_idx=index: self.tab_widget.setTabText(tab_idx, f"端口重定向({count})")
                 )
             elif title == "域名欺骗":
-                dns_page = DnsSpoofPage(self.tab_widget)
+                shared_mgr = self.port_redirect_page.driver_manager if self.port_redirect_page is not None else self._driver_manager
+                dns_page = DnsSpoofPage(self.tab_widget, driver_manager=shared_mgr)
                 self.dns_spoof_page = dns_page
                 self.tab_widget.addTab(dns_page, f"域名欺骗({len(dns_page.rules)})")
                 dns_page.ruleCountChanged.connect(
@@ -842,10 +848,21 @@ class MainWindow(QMainWindow):
             else:
                 self.tab_widget.addTab(PlaceholderPage(title, self.tab_widget), title)
 
+        if self.port_redirect_page is not None and self.dns_spoof_page is not None:
+            self.port_redirect_page.driverStateChanged.connect(
+                lambda: self.dns_spoof_page.load_rules(silent=True)
+            )
+        self.tab_widget.currentChanged.connect(self._on_tab_changed)
+
         self.tab_widget.setCurrentIndex(port_redirect_index)
         content_layout.addWidget(self.tab_widget)
         root_layout.addWidget(content_host)
         self.setCentralWidget(central)
+
+    def _on_tab_changed(self, index: int):
+        widget = self.tab_widget.widget(index)
+        if widget is self.dns_spoof_page:
+            self.dns_spoof_page.load_rules(silent=True)
 
 
 def main():
