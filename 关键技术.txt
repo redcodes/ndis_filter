@@ -1,0 +1,218 @@
+========================================================================
+NDISLWF 网络重定向与 DNS 欺骗关键技术实现总结
+========================================================================
+
+一、总体架构设计
+------------------------------------------------------------------------
+本项目基于 Windows NDIS 6.0 Lightweight Filter (LWF) 驱动架构，在以太网
+数据链路层之上、TCP/IP 协议栈之下实现高性能内核态流量改写与注入，同时
+提供统一的控制设备与用户态客户端：
+
+1. NDIS 过滤驱动挂载（driver/netlwf.inf, driver/filter.c）
+   - FilterType = 0x2（Modifying Filter，允许修改/替换/注入数据包）
+   - FilterMediaTypes = "ethernet"（挂载 NdisMedium802_3 / NdisMediumWan）
+   - FilterRunType = 1（Mandatory，确保协议绑定前过滤驱动先就绪）
+
+2. 控制面通信通道（driver/device.c, driver/filteruser.h）
+   - 通过 NdisRegisterDeviceEx 注册控制设备 \Device\NDISLWF 与符号链接
+     \DosDevices\NDISLWF（用户态访问路径 \\.\NDISLWF）。
+   - 采用 METHOD_BUFFERED 方式分发自定义 IOCTL：
+     * 重定向规则：function 14(ADD/UPDATE)、15(DEL)、16(CLEAR)、17(LIST)
+     * DNS 欺骗 ：function 18(ADD/UPDATE)、19(DEL)、20(CLEAR)、21(LIST)
+   - 内核与用户态共享固定长度紧凑结构体（无隐式对齐填充），通过字节偏移
+     严格对齐（REDIRECT_RULE = 52 字节，DNS_SPOOF_RULE = 288 字节）。
+
+3. 数据面处理管线（driver/filter.c）
+   - 出站路径 FilterSendNetBufferLists：
+       原 NBL ─► DnsSpoofProcessSendNbl()
+                    ├─ 命中：吞掉原查询包(返回 NDIS_STATUS_SUCCESS)，
+                    │        通过异步 DPC 注入伪造 DNS 应答
+                    └─ 未命中 ─► RedirectProcessSendNbl()
+                                   ├─ Passthrough：零分配原样下发
+                                   ├─ Cloned：克隆改写后下发网卡
+                                   └─ LocalInjected：完成原包并异步注入本机
+   - 出站完成 FilterSendNetBufferListsComplete：
+       通过 CurrNbl->SourceHandle == pFilter->FilterHandle 识别本驱动克隆
+       的 NBL，释放内部 Buffer/MDL/NB/NBL 并还原 ParentNetBufferList 向上
+       完成，递减 PendingClonedSends。
+   - 入站路径 FilterReceiveNetBufferLists：
+       经 RedirectProcessReceiveNbl() 匹配外部重定向会话；命中则克隆并还原
+       源 IP/端口/MAC 后清除 NDIS_RECEIVE_FLAGS_RESOURCES 向上指示，原 NBL
+       归还下层网卡。
+   - 入站归还 FilterReturnNetBufferLists：
+       拦截 SourceHandle == pFilter->FilterHandle 的自构造/自注入 NBL，
+       直接释放并递减 PendingClonedReceives，避免错误归还给下层 Miniport。
+
+4. 安全暂停与卸载保护（driver/redirect.c: RedirectPauseFilter）
+   - 暂停/解绑时先调用 KeFlushQueuedDpcs() 等待已调度 DPC 结束，再排空
+     InjectHead/Tail 队列并释放残留 NBL，最后自旋等待 PendingClonedSends
+     与 PendingClonedReceives 全部归零，防止卸载期间悬空指针蓝屏或内存泄漏。
+
+
+二、网络重定向（IP / 端口重定向）关键技术实现
+------------------------------------------------------------------------
+核心实现位于 driver/redirect.c 与 driver/redirect.h。
+
+1. 零分配快速路径与多层协议解析
+   - 快速路径先检查 gRuleCount 与 gSessionCount，均为空时 O(1) 透传。
+   - 使用 NdisGetDataBuffer 将报文头窥探至栈缓冲（REDIRECT_PEEK_SIZE=128B），
+     仅在命中规则或会话时才执行内核池内存分配与完整包拷贝。
+   - 协议解析（RedirectParsePacketHeaders）支持：
+     * Ethernet + 最多 2 层 VLAN / QinQ（0x8100 / 0x88A8）
+     * IPv4（支持变长 IHL，跳过非首片分片报文）
+     * IPv6（遍历最多 8 层 Hop-by-Hop / Routing / DestOpts / Fragment 扩展头）
+     * TCP / UDP 端口提取（支持单协议或 ANY 通配，源端口 0=任意、目标端口 0=保原）
+
+2. 规则表与并发控制
+   - 全局规则数组最多支持 64 条（MAX_REDIRECT_RULES），使用 NDIS_RW_LOCK
+     实现高并发读（数据面匹配）与互斥写（IOCTL 增删改清）。
+   - 支持按 RuleId 原地更新；规则更新、删除或清空时自动按 RuleId 清理关联
+     NAT 会话，防止旧连接残留错误映射。
+
+3. 有状态 NAT 会话表（哈希 + LRU + 超时淘汰）
+   - 采用 FNV-1a 哈希分 256 桶（REDIRECT_SESSION_BUCKETS），最大容量 4096 条
+     会话（REDIRECT_MAX_SESSIONS），全局 FILTER_LOCK 保护。
+   - 双向链表维护 LRU，容量满时自动淘汰最久未活跃会话；查表时自动清理超过
+     120 秒（REDIRECT_SESSION_TIMEOUT）未活跃的过期会话。
+   - 同一张会话表通过 IsLocalLoopback 标志隔离“外部重定向”和“本机环回”
+     两类会话，避免五元组键冲突。
+
+4. 外部 DNAT 重定向与透明还原
+   - 出站改写（RedirectApplyOutboundRewrite）：
+     * 改写目的 IP（IPv4/IPv6）、目的端口；
+     * 若启用 REDIRECT_FLAG_REWRITE_MAC，同步改写以太网目的 MAC（解决同网段
+       跨主机重定向时二层帧无法送达的问题）；
+     * 以 (ClientIp, ClientPort, NewDstIp, NewDstPort) 为键写入外部会话，记录
+       (OrigDstIp, OrigDstPort, OrigDstMac)。
+   - 入站还原（RedirectApplyInboundRestore）：
+     * 收到远端回包时按五元组查表，将 SrcIp、SrcPort（及可选 SrcMac）还原为
+       原始目标地址，客户端完全无感知。
+
+5. 本机环回重定向（Local Loopback）双向闭环机制
+   - 触发条件：自动检测 Rule.NewIp == 出站包 SrcIp（即重定向到本机网卡 IP），
+     或规则显式开启 REDIRECT_FLAG_LOCAL_LOOPBACK。
+   - 核心问题：发往物理网卡的数据包不会自动回到本机协议栈；若仅把目的 IP 改成
+     本机 IP 而保持源 IP 为本机 IP，本机服务回包会走 tcpip.sys 内部环回从而
+     绕过 NDIS LWF，导致无法还原五元组。
+   - 闭环方案（RedirectProcessLocalLoopbackSendNbl）：
+     (1) Client -> Server（出站命中本地规则）：
+         - 互换以太网 SrcMac <-> DstMac（使目的 MAC 为本机网卡 MAC）；
+         - 将包头 SrcIp 伪装为 OrigDstIp，DstIp 改为 NewIp（本机），DstPort
+           改为 NewPort，写入本地环回会话；
+         - 完成原发送 NBL（NDIS_STATUS_SUCCESS），并将改写后的 NBL 经异步 DPC
+           注入本机接收路径交给本地监听服务。
+     (2) Server -> Client（本地服务回包出站）：
+         - 因本地服务看到的对端是外部地址 OrigDstIp，其回包必然经路由发往物理
+           网卡，从而再次进入 FilterSendNetBufferLists；
+         - 驱动命中 RedirectLookupLocalReplySession，将 SrcIp/SrcPort 还原为
+           OrigDstIp/OrigDstPort，DstIp 还原为 ClientIp，再次通过异步 DPC 注入
+           本机接收路径交回客户端，完成透明双向通信。
+
+6. 硬件卸载（Checksum Offload & LSOv1/LSOv2）兼容处理
+   - 校验和重算：使用大端字节序累加算法，与主机字节序无关；按需重算 IPv4 首部
+     校验和及 TCP/UDP 伪首部+载荷校验和（UDP 校验和为 0 时按 RFC 置为 0xFFFF）。
+   - 外部非 LSO 包：清除克隆 NBL 的 TcpIpChecksumNetBufferListInfo，由驱动软件
+     计算完整校验和，避免硬件用旧校验和偏移信息覆盖或算错。
+   - 外部 LSO 大包：保留 LSO 卸载标记，将 TCP 校验和更新为基于新 IP 的伪首部
+     校验和（不含长度），由网卡继续执行硬件分片与校验和计算。
+   - 本机环回 LSO 大包（RedirectBuildLocalInjectNbls）：
+     * 因接收注入路径不再经过网卡硬件分片，驱动在软件中按 LsoMss 将大 TCP 包
+       拆分为多个 <= MSS 的标准分片：依次推进 TCP SeqNum 与 IPv4 Identification，
+       非末片清除 FIN/PSH，非首片清除 CWR，并逐片修正 IP 长度与完整校验和。
+
+7. 异步 DPC 接收注入（防重入死锁）
+   - 不在 FilterSendNetBufferLists 中同步调用 NdisFIndicateReceiveNetBufferLists
+     （防止协议栈同步重入发送路径引发自旋锁死锁或内核栈溢出）。
+   - 将待注入 NBL 链表压入 pFilter->InjectHead/Tail（InjectLock 保护），调用
+     KeInsertQueueDpc(&pFilter->InjectDpc)，由 RedirectInjectDpcRoutine 在
+     DISPATCH_LEVEL 批量取出并在确认 pFilter->State == FilterRunning 后向上指示。
+
+
+三、DNS 欺骗（DNS Spoofing）关键技术实现
+------------------------------------------------------------------------
+核心实现位于 driver/dns_spoof.c 与 driver/dns_spoof.h。
+
+1. 零竞态出站拦截与伪造注入架构
+   - 相比“放行查询后再篡改真实回包”，本驱动采用出站直接截断并本地伪造应答：
+     * 在 FilterSendNetBufferLists 捕获发往 UDP/53 的标准 DNS 查询；
+     * 命中规则后直接构造完整 DNS 应答以太网帧，复用 RedirectInjectLocalPacket()
+       经由异步 DPC 注入本机接收路径，同时吞掉原始查询包（不发往外网）。
+   - 优势：彻底消除与上游 DNS 服务器回包之间的竞态条件，响应延迟极低，且在
+     无外网或上游不可达时同样生效。
+
+2. 低开销协议过滤与 DNS 报文解析
+   - 快速路径先判断 gDnsRuleCount > 0、单 NB 及帧长度区间（59B ~ 1024B），在栈上
+     窥探 DNS_PEEK_LEN(96B) 解析 Ethernet + 最多 2 层 VLAN + IPv4（跳过分片包）/
+     IPv6 + UDP 目的端口 53；非 DNS 查询零池分配直接放行。
+   - 报文解析（DnsParseStandardQuery）：
+     * 校验标准查询标志（QR=0、OPCODE=0、QDCOUNT=1、ANCOUNT=0），兼容携带 EDNS0
+       OPT 附加记录（ARCOUNT >= 0）的现代系统查询；
+     * 安全遍历 QNAME 标签链：检查每个标签长度（1~63）、拒绝查询中的压缩指针
+       （高位 0xC0）、限制总长 <= 253 字节，并统一转为小写 ASCII；
+     * 仅处理 QCLASS = IN (1) 且 QTYPE = A (1) 或 AAAA (28) 的查询。
+
+3. 域名规范化与匹配优先级策略
+   - 最多支持 64 条规则（MAX_DNS_SPOOF_RULES），NDIS_RW_LOCK 保护。
+   - 入库规范化（DnsNormalizeDomain）：去除首尾空白与末尾根点 '.'、统一小写、
+     校验字符集（a-z / 0-9 / '-' / '_'），自动识别或补全前缀 "*."。
+   - 匹配优先级（DnsMatchRule）：
+     1) 精确匹配（如 "baidu.com"）最高优先，命中即返回；
+     2) 通配符匹配（如 "*.baidu.com" 匹配所有以 ".baidu.com" 结尾的子域）次之；
+     3) 多条通配符同时命中时，采用“最长后缀优先”原则（如 "*.api.baidu.com"
+        优先于 "*.baidu.com"）。
+
+4. 双栈伪造应答与防逃逸 NODATA 机制
+   - 完整构造 L2/L3/L4 + DNS 响应帧：
+     * L2：保留原 VLAN 标签，互换 SrcMac <-> DstMac；
+     * L3：互换 SrcIp <-> DstIp，设置合理 TTL/HopLimit=64，重算 IPv4 首部校验和；
+     * L4：互换 SrcPort <-> DstPort（源端口 53），软件计算 IPv4/IPv6 UDP 校验和；
+     * DNS 载荷：原样回填 TransactionId 与 Question 段，保留 RD 位并设置 QR=1、
+       RA=1、RCODE=0、QDCOUNT=1、Authority/Additional=0。
+   - Answer 记录编码：使用 2 字节指针压缩 0xC00C 指向偏移 12 的查询域名，写入
+     QTYPE、CLASS=IN、配置 TTL（为 0 时默认 30 秒）、RDLENGTH（4 或 16）及伪造 IP。
+   - 防双栈逃逸（NODATA 应答）：
+     * 当查询域名命中规则，但规则仅配置了 IPv4 而系统发起 AAAA 查询（或仅配置
+       IPv6 而系统发起 A 查询）时，驱动不会把该查询放行给上游真实 DNS，而是返回
+       干净的 NODATA 应答（RCODE=0, ANCOUNT=0），防止操作系统因拿到真实 IPv6/IPv4
+       而绕过欺骗。
+
+
+四、用户态驱动管理与客户端协同关键技术
+------------------------------------------------------------------------
+核心实现位于 client/ 目录。
+
+1. 客户端与驱动二进制接口封装
+   - redirect_driver.py / dns_spoof_driver.py 通过 ctypes 直接调用 kernel32
+     CreateFileW / DeviceIoControl 与 \\.\NDISLWF 通信，零第三方系统依赖。
+   - 支持 IDN 国际化域名自动转换为 Punycode ASCII 后再下发内核；对 Win32 错误码
+     映射可读中文提示（包含旧驱动不支持新 IOCTL 时的 WinError 1 提示）。
+
+2. DNS 缓存自动刷新与状态联动
+   - 客户端在添加、修改、删除、清空 DNS 欺骗规则后，自动调用系统
+     dnsapi.dll!DnsFlushResolverCache 刷新本机 DNS 解析器缓存，使规则立即生效。
+   - 端口重定向页与域名欺骗页共享 NdisLwfDriverManager 实例，驱动安装/启动/卸载
+     及切页时自动同步状态与规则表。
+
+3. 兼容 Windows 7 与 Windows 10/11 的 NDIS LWF 安装管理（driver_manager.py）
+   - 服务状态查询与启停直接调用 advapi32.dll SCM API；
+   - NDIS 过滤驱动安装优先调用系统 netcfg.exe（兼容 32 位进程通过 Sysnative
+     调用 64 位 netcfg.exe）；在缺少 netcfg.exe 的 Windows 7 环境中，自动回退至
+     setupapi.dll!SetupCopyOEMInfW + ole32.dll COM 虚表调用 INetCfg / INetCfgLock
+     / INetCfgClassSetup 完成驱动注册与网卡绑定。
+
+4. Win7 兼容单文件打包（client/build_client_win7.ps1）
+   - 强制基于 Python 3.8 + PyQt5 5.15.2 + PyInstaller --onefile；
+   - 显式打入 VC++ 14 运行库及 Windows 10 SDK Universal CRT（ucrtbase.dll 与
+     api-ms-win-crt-*.dll），使未安装 KB2999226 补丁的 Win7 SP1 也可单文件运行；
+   - 内嵌 requireAdministrator 清单并适配 sys.frozen 路径，保证配置与驱动查找正常。
+
+
+五、架构边界与使用注意事项
+------------------------------------------------------------------------
+1. 本机自连（本机访问 127.0.0.1 / ::1 或本机网卡自身 IP）直接在 tcpip.sys 内部
+   走软件环回，不经过以太网 NDIS LWF；因此本机环回重定向的原始目的 IP 必须为经由
+   绑定网卡路由的非本机 IP（若需拦截本机自连需引入 WFP ALE_CONNECT_REDIRECT）。
+2. 同网段跨主机重定向需通过 --mac 指定目标下一跳 MAC 地址；跨网段同网关场景可留空。
+3. DNS 欺骗当前针对标准明文 UDP/53 查询生效，不拦截浏览器内置 DoH（DNS over HTTPS）
+   或 DoT（DNS over TLS）流量。
+========================================================================
