@@ -103,9 +103,12 @@ _WINERROR_HINTS = {
     ERROR_NO_SYSTEM_RESOURCES: f"驱动规则数已达上限（最多 {MAX_REDIRECT_RULES} 条）",
 }
 
-DEFAULT_NAME_STORE_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "redirect_rule_names.json"
+_APP_DIR = (
+    os.path.dirname(os.path.abspath(sys.executable))
+    if getattr(sys, "frozen", False)
+    else os.path.dirname(os.path.abspath(__file__))
 )
+DEFAULT_NAME_STORE_PATH = os.path.join(_APP_DIR, "redirect_rule_names.json")
 
 
 # ---------------------------------------------------------------------------

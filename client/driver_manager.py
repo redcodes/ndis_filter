@@ -335,7 +335,10 @@ class NdisLwfDriverManager:
         self.component_id = component_id
         self.device_path = device_path
         if project_root is None:
-            self.project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            if getattr(sys, "frozen", False):
+                self.project_root = os.path.dirname(os.path.abspath(sys.executable))
+            else:
+                self.project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         else:
             self.project_root = os.path.abspath(project_root)
 
@@ -365,10 +368,12 @@ class NdisLwfDriverManager:
                 os.path.join(driver_dir, "objfre_win7_amd64", "amd64", SYS_FILENAME),
                 os.path.join(driver_dir, "objchk_win7_amd64", "amd64", SYS_FILENAME),
                 os.path.join(driver_dir, SYS_FILENAME),
+                os.path.join(self.project_root, SYS_FILENAME),
             ]
             inf_candidates = [
                 os.path.join(dist_dir, "ndislwf_win7_x64", INF_FILENAME),
                 os.path.join(driver_dir, INF_FILENAME),
+                os.path.join(self.project_root, INF_FILENAME),
             ]
         else:
             sys_candidates = [
@@ -376,10 +381,12 @@ class NdisLwfDriverManager:
                 os.path.join(driver_dir, "objfre_win7_x86", "i386", SYS_FILENAME),
                 os.path.join(driver_dir, "objchk_win7_x86", "i386", SYS_FILENAME),
                 os.path.join(driver_dir, SYS_FILENAME),
+                os.path.join(self.project_root, SYS_FILENAME),
             ]
             inf_candidates = [
                 os.path.join(dist_dir, "ndislwf_win7_x86", INF_FILENAME),
                 os.path.join(driver_dir, INF_FILENAME),
+                os.path.join(self.project_root, INF_FILENAME),
             ]
 
         inf_path = next((p for p in inf_candidates if os.path.isfile(p)), None)
